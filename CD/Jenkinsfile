@@ -1,0 +1,73 @@
+pipeline {
+    agent any
+
+    environment {
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-credentials')
+        IMAGE_NAME = "nikitaplastinkin/hw_devops_lab3"
+        IMAGE_TAG  = "latest"
+        COMPOSE_DIR = "/Users/nikitadasha/devops/hw_devops_lab3"
+    }
+
+    stages {
+        stage('Pull Image') {
+            steps {
+                sh "echo ${DOCKERHUB_CREDENTIALS_PSW} | docker login -u ${DOCKERHUB_CREDENTIALS_USR} --password-stdin"
+                sh "docker pull ${IMAGE_NAME}:${IMAGE_TAG}"
+            }
+        }
+
+        stage('Run Unit Tests') {
+            steps {
+                sh """
+                    docker run --rm \
+                        -v ${COMPOSE_DIR}/experiments:/app/experiments \
+                        ${IMAGE_NAME}:${IMAGE_TAG} \
+                        python -m pytest src/unit_tests/ -v
+                """
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh "cd ${COMPOSE_DIR} && docker-compose down --remove-orphans || true"
+                sh "cd ${COMPOSE_DIR} && docker-compose up -d vault db vault-init api"
+            }
+        }
+
+        stage('Health Check') {
+            steps {
+                sh "sleep 15"
+                sh "curl -f http://localhost:5000/health"
+            }
+        }
+
+        stage('Functional Tests') {
+            steps {
+                // Тест 1: предикт возвращает label и confidence
+                sh """
+                    curl -sf -X POST http://localhost:5000/predict \
+                        -F "file=@${COMPOSE_DIR}/experiments/test_image.jpg" \
+                        | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'label' in d and 'confidence' in d, 'predict failed'"
+                """
+                // Тест 2: история предиктов возвращает список
+                sh """
+                    curl -sf http://localhost:5000/predictions \
+                        | python3 -c "import sys,json; d=json.load(sys.stdin); assert isinstance(d, list), 'predictions failed'"
+                """
+            }
+        }
+    }
+
+    post {
+        always {
+            sh "docker logout"
+        }
+        failure {
+            sh "cd ${COMPOSE_DIR} && docker-compose down || true"
+            echo "Pipeline failed"
+        }
+        success {
+            echo "Deployed and tested: ${IMAGE_NAME}:${IMAGE_TAG}"
+        }
+    }
+}

@@ -1,0 +1,60 @@
+services:
+  vault:
+    image: hashicorp/vault:1.13.3
+    container_name: vault
+    env_file: secrets.env
+    environment:
+      VAULT_DEV_LISTEN_ADDRESS: "0.0.0.0:8200"
+      VAULT_DISABLE_MLOCK: "true"
+    ports:
+      - "8200:8200"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "VAULT_ADDR=http://127.0.0.1:8200 vault status"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  vault-init:
+    image: hashicorp/vault:1.13.3
+    container_name: vault-init
+    env_file: secrets.env
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    volumes:
+      - ./vault/init.sh:/init.sh
+    command: sh /init.sh
+    depends_on:
+      vault:
+        condition: service_healthy
+    restart: on-failure
+
+  db:
+    image: postgres:15
+    container_name: db
+    env_file: secrets.env
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  api:
+    build: .
+    container_name: api
+    env_file: secrets.env
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./experiments:/app/experiments
+    command: python src/api.py
+    depends_on:
+      vault:
+        condition: service_healthy
+      vault-init:
+        condition: service_completed_successfully
+      db:
+        condition: service_started
+
+volumes:
+  postgres_data:
