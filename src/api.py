@@ -34,10 +34,16 @@ PORT        = int(config["API"]["port"])
 model  = joblib.load(MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
 
-producer = KafkaProducer(
-    bootstrap_servers=KAFKA_BOOTSTRAP,
-    value_serializer=lambda v: json.dumps(v).encode("utf-8")
-)
+_producer = None
+
+def get_producer():
+    global _producer
+    if _producer is None:
+        _producer = KafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP,
+            value_serializer=lambda v: json.dumps(v).encode("utf-8")
+        )
+    return _producer
 
 
 def get_vault_secrets():
@@ -91,12 +97,12 @@ def predict():
     confidence = round(float(max(proba)), 3)
     logger.info(f"Предсказание: {label}, confidence: {confidence}")
 
-    producer.send(KAFKA_TOPIC, {
+    get_producer().send(KAFKA_TOPIC, {
         "filename": file.filename,
         "label": label,
         "confidence": confidence
     })
-    producer.flush()
+    get_producer().flush()
 
     return jsonify({
         "label": label,
