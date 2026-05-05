@@ -97,12 +97,15 @@ def predict():
     confidence = round(float(max(proba)), 3)
     logger.info(f"Предсказание: {label}, confidence: {confidence}")
 
-    get_producer().send(KAFKA_TOPIC, {
-        "filename": file.filename,
-        "label": label,
-        "confidence": confidence
-    })
-    get_producer().flush()
+    try:
+        get_producer().send(KAFKA_TOPIC, {
+            "filename": file.filename,
+            "label": label,
+            "confidence": confidence
+        })
+        get_producer().flush()
+    except Exception as e:
+        logger.error(f"Kafka error: {e}")
 
     return jsonify({
         "label": label,
