@@ -214,3 +214,4 @@ experiments/
 gdrive_credentials.json
 .env
 secrets.env
+secrets.env

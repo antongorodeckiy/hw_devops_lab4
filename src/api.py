@@ -1,10 +1,12 @@
 import io
 import os
+import json
 import configparser
 import numpy as np
 import joblib
 import psycopg2
 import hvac
+from kafka import KafkaProducer
 from flask import Flask, request, jsonify, render_template
 from PIL import Image
 from skimage.feature import hog
@@ -14,14 +16,8 @@ from logger import get_logger
 app = Flask(__name__)
 logger = get_logger("api")
 
-
-def get_vault_secrets():
-    client = hvac.Client(
-        url=os.environ["VAULT_ADDR"],
-        token=os.environ["VAULT_TOKEN"]
-    )
-    secret = client.secrets.kv.v2.read_secret_version(path="db", mount_point="secret")
-    return secret["data"]["data"]
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092")
+KAFKA_TOPIC = os.environ.get("KAFKA_TOPIC", "predictions")
 
 config = configparser.ConfigParser()
 config.read("config.ini")
@@ -38,6 +34,20 @@ PORT        = int(config["API"]["port"])
 model  = joblib.load(MODEL_PATH)
 scaler = joblib.load(SCALER_PATH)
 
+producer = KafkaProducer(
+    bootstrap_servers=KAFKA_BOOTSTRAP,
+    value_serializer=lambda v: json.dumps(v).encode("utf-8")
+)
+
+
+def get_vault_secrets():
+    client = hvac.Client(
+        url=os.environ["VAULT_ADDR"],
+        token=os.environ["VAULT_TOKEN"]
+    )
+    secret = client.secrets.kv.v2.read_secret_version(path="db", mount_point="secret")
+    return secret["data"]["data"]
+
 
 def get_db_connection():
     secrets = get_vault_secrets()
@@ -48,38 +58,6 @@ def get_db_connection():
         user=secrets["POSTGRES_USER"],
         password=secrets["POSTGRES_PASSWORD"]
     )
-
-
-def init_db():
-    conn = get_db_connection()
-    cur = conn.cursor()
-    cur.execute("""
-        CREATE TABLE IF NOT EXISTS predictions (
-            id SERIAL PRIMARY KEY,
-            filename TEXT,
-            label TEXT,
-            confidence FLOAT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
-    cur.close()
-    conn.close()
-
-
-def save_prediction(filename, label, confidence):
-    try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO predictions (filename, label, confidence) VALUES (%s, %s, %s)",
-            (filename, label, confidence)
-        )
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        logger.error(f"DB error: {e}")
 
 
 @app.route("/predict", methods=["POST"])
@@ -113,7 +91,12 @@ def predict():
     confidence = round(float(max(proba)), 3)
     logger.info(f"Предсказание: {label}, confidence: {confidence}")
 
-    save_prediction(file.filename, label, confidence)
+    producer.send(KAFKA_TOPIC, {
+        "filename": file.filename,
+        "label": label,
+        "confidence": confidence
+    })
+    producer.flush()
 
     return jsonify({
         "label": label,
@@ -149,5 +132,4 @@ def health():
 
 
 if __name__ == "__main__":
-    init_db()
     app.run(host=HOST, port=PORT)
